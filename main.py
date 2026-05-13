@@ -63,6 +63,51 @@ def detect_patterns(df):
     highs = df['High']
     lows = df['Low']
 
+    # --- Order Block (engulfing) haussier ET baissier ---
+    for i in range(2, len(df)-2):
+        # Engulfing haussier
+        if (closes[i] > opens[i] and                     # bougie i verte
+            closes[i-1] < opens[i-1] and                 # bougie i-1 rouge
+            closes[i] > opens[i-1] and                   # la verte avale la rouge
+            opens[i] < closes[i-1]):
+            patterns.append({
+                "pattern": "Order Block haussier (15min)",
+                "confiance": "moyenne",
+                "type": "achat"
+            })
+            break   # <-- enlève ce 'break' si tu veux détecter plusieurs signaux à la fois
+
+        # Engulfing baissier
+        if (closes[i] < opens[i] and                     # bougie i rouge
+            closes[i-1] > opens[i-1] and                 # bougie i-1 verte
+            opens[i] > closes[i-1] and                   # la rouge ouvre au-dessus de la clôture verte
+            closes[i] < opens[i-1]):                     # et clôture sous l'ouverture verte
+            patterns.append({
+                "pattern": "Order Block baissier (15min)",
+                "confiance": "moyenne",
+                "type": "vente"
+            })
+            break   # idem, optionnel
+
+    # --- Double Top / Double Bottom (inchangé) ---
+    if len(df) >= 10:
+        recent_highs = highs[-10:]
+        recent_lows = lows[-10:]
+        if max(recent_highs[-3:]) < max(recent_highs[:-3]) * 0.999:
+            patterns.append({
+                "pattern": "Double Top détecté",
+                "confiance": "moyenne+",
+                "type": "vente"
+            })
+        if min(recent_lows[-3:]) > min(recent_lows[:-3]) * 1.001:
+            patterns.append({
+                "pattern": "Double Bottom détecté",
+                "confiance": "moyenne+",
+                "type": "achat"
+            })
+
+    return patterns
+
     # --- Order Block haussier simplifié ---
     for i in range(2, len(df)-2):
         if closes[i] > opens[i] and closes[i-1] < opens[i-1] and closes[i] > opens[i-1]:
