@@ -17,7 +17,7 @@ def send_test():
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     requests.post(url, json={"chat_id": CHAT_ID, "text": msg})
 
-if name == "main":
+if __name__ == "__main__":
     send_test()
     while True:
         time.sleep(INTERVAL * 60)
