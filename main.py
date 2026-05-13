@@ -11,22 +11,48 @@ TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 INTERVAL = int(os.getenv("CHECK_INTERVAL_MINUTES", "5"))
 TZ = pytz.timezone(os.getenv("TIMEZONE", "Europe/Paris"))
+TWELVE_KEY = os.getenv("TWELVE_DATA_API_KEY", "")
 
-# --------------------- 1. RÉCUPÉRATION DU PRIX ---------------------
+# --------------------- 1. PRIX SPOT VIA TWELVE DATA ---------------------
 def get_spot_price():
-    # Récupère le prix spot via les futures GC=F et le ratio GLD/GC
+    """Récupère le prix spot XAU/USD via Twelve Data."""
+    if not TWELVE_KEY:
+        # Fallback sur Yahoo si pas de clé
+        try:
+            ticker = yf.Ticker("GC=F")
+            price = ticker.history(period="1d", interval="15m")['Close'].iloc[-1]
+            if price > 4000:
+                price = price / 2
+            return price
+        except:
+            return None
+
     try:
-        gc = yf.Ticker("GC=F")
-        gc_price = gc.history(period="1d", interval="15m")['Close'].iloc[-1]
-        # Si le prix est > 4000, on suppose que c'est le future x2 (ex: 4713 / 2 = 2356)
-        if gc_price > 4000:
-            return gc_price / 2
+        url = f"https://api.twelvedata.com/price?symbol=XAU/USD&apikey={TWELVE_KEY}"
+        resp = requests.get(url)
+        data = resp.json()
+        if "price" in data:
+            return float(data["price"])
         else:
-            return gc_price
+            print("Twelve Data error:", data)
+            return None
+    except Exception as e:
+        print(f"Erreur Twelve Data : {e}")
+        return None
+
+# --------------------- 2. HISTORIQUE BOUGIES (YAHOO) ---------------------
+def get_price_history():
+    """Récupère l'historique 15min pour les patterns (via GC=F)."""
+    try:
+        ticker = yf.Ticker("GC=F")
+        df = ticker.history(period="5d", interval="15m")
+        if df.empty:
+            return None
+        return df
     except:
         return None
 
-# --------------------- 2. DÉTECTION DE PATTERNS ---------------------
+# --------------------- 3. DÉTECTION DE PATTERNS ---------------------
 def detect_patterns(df):
     patterns = []
     if df is None or len(df) < 10:
@@ -39,7 +65,6 @@ def detect_patterns(df):
 
     # --- Order Block haussier simplifié ---
     for i in range(2, len(df)-2):
-        # Engulfing haussier
         if closes[i] > opens[i] and closes[i-1] < opens[i-1] and closes[i] > opens[i-1]:
             patterns.append({
                 "pattern": "Order Block haussier (15min)",
@@ -48,7 +73,7 @@ def detect_patterns(df):
             })
             break
 
-    # --- Double Top / Double Bottom simples ---
+    # --- Double Top / Double Bottom ---
     if len(df) >= 10:
         recent_highs = highs[-10:]
         recent_lows = lows[-10:]
@@ -67,7 +92,7 @@ def detect_patterns(df):
 
     return patterns
 
-# --------------------- 3. CONSTRUCTION DU SIGNAL ---------------------
+# --------------------- 4. CONSTRUCTION DU SIGNAL ---------------------
 def build_signal(price, pattern_info):
     if pattern_info["type"] == "achat":
         entree = price * 1.001
@@ -96,7 +121,7 @@ def build_signal(price, pattern_info):
         "timestamp": datetime.now(TZ).strftime("%H:%M")
     }
 
-# --------------------- 4. ENVOI TELEGRAM ---------------------
+# --------------------- 5. ENVOI TELEGRAM ---------------------
 def send_alert(signal):
     if not TOKEN or not CHAT_ID:
         return
@@ -104,7 +129,7 @@ def send_alert(signal):
         f"🔥 *SIGNAL XAUUSD* 🔥\n"
         f"🕐 {signal['timestamp']}\n\n"
         f"▫️ Pattern : {signal['pattern']}\n"
-        f"💵 Prix actuel : {signal['prix']}\n\n"
+        f"💵 Prix spot : {signal['prix']}\n\n"
         f"⬆️ Entrée : {signal['entree']}\n"
         f"🛑 Stop Loss : {signal['sl']}\n"
         f"🎯 TP1 : {signal['tp1']}\n"
@@ -126,30 +151,34 @@ def send_alert(signal):
     except Exception as e:
         print(f"❌ Erreur envoi : {e}")
 
-# --------------------- 5. BOUCLE PRINCIPALE ---------------------
+# --------------------- 6. BOUCLE PRINCIPALE ---------------------
 if __name__ == "__main__":
-    print("🚀 Bot XAUUSD (patterns) démarré...")
+    print("🚀 Bot XAUUSD (Twelve Data spot) démarré...")
     # Message de bienvenue
     try:
         requests.post(
             f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-            json={"chat_id": CHAT_ID, "text": "✅ Bot Patterns XAUUSD en ligne !"}
+            json={"chat_id": CHAT_ID, "text": "✅ Bot Patterns XAUUSD en ligne (spot via Twelve Data) !"}
         )
     except Exception:
         pass
 
     while True:
         try:
-            price = get_spot_price()
-            df = get_price_and_history()[1]   # On garde l’historique depuis GC=F
-            if price is not None:
+            # Récupère le prix spot via Twelve Data
+            spot_price = get_spot_price()
+            # Récupère l'historique depuis Yahoo (GC=F)
+            df = get_price_history()
+
+            if spot_price is not None and df is not None:
                 patterns = detect_patterns(df)
                 for pat in patterns:
-                    signal = build_signal(price, pat)
+                    signal = build_signal(spot_price, pat)
                     send_alert(signal)
-                print(f"[{datetime.now(TZ).strftime('%H:%M')}] Scan terminé – {len(patterns)} pattern(s)")
+                print(f"[{datetime.now(TZ).strftime('%H:%M')}] Prix spot: {spot_price} – {len(patterns)} pattern(s)")
             else:
-                print("⚠️ Données de prix indisponibles")
+                print("⚠️ Données indisponibles (prix ou historique)")
         except Exception as e:
             print(f"❌ Erreur boucle : {e}")
+
         time.sleep(INTERVAL * 60)
