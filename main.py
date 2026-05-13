@@ -140,7 +140,8 @@ if __name__ == "__main__":
 
     while True:
         try:
-            price, df = get_price_and_history()
+            price = get_spot_price()
+df = get_price_and_history()[1]   # On garde l’historique depuis GC=F
             if price is not None:
                 patterns = detect_patterns(df)
                 for pat in patterns:
