@@ -2,23 +2,148 @@ import os
 import time
 import requests
 import yfinance as yf
+import pandas as pd
+import pytz
+from datetime import datetime
 
+# --------------------- CONFIG ---------------------
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 INTERVAL = int(os.getenv("CHECK_INTERVAL_MINUTES", "5"))
+TZ = pytz.timezone(os.getenv("TIMEZONE", "Europe/Paris"))
 
-def send_test():
-    try:
-        ticker = yf.Ticker("GC=F")
-        price = ticker.history(period="1d", interval="15m")['Close'].iloc[-1]
-        msg = f"🚀 Bot test OK\n Prix XAUUSD: {price:.2f}"
-    except:
-        msg = "🚀 Bot test OK (prix non disponible)"
+# --------------------- 1. RÉCUPÉRATION DU PRIX ---------------------
+def get_price_and_history():
+    ticker = yf.Ticker("GC=F")
+    df = ticker.history(period="5d", interval="15m")
+    if df.empty:
+        return None, None
+    price = df['Close'].iloc[-1]
+    return price, df
+
+# --------------------- 2. DÉTECTION DE PATTERNS ---------------------
+def detect_patterns(df):
+    patterns = []
+    if df is None or len(df) < 10:
+        return patterns
+
+    closes = df['Close']
+    opens = df['Open']
+    highs = df['High']
+    lows = df['Low']
+
+    # --- Order Block haussier simplifié ---
+    for i in range(2, len(df)-2):
+        # Engulfing haussier
+        if closes[i] > opens[i] and closes[i-1] < opens[i-1] and closes[i] > opens[i-1]:
+            patterns.append({
+                "pattern": "Order Block haussier (15min)",
+                "confiance": "moyenne",
+                "type": "achat"
+            })
+            break
+
+    # --- Double Top / Double Bottom simples ---
+    if len(df) >= 10:
+        recent_highs = highs[-10:]
+        recent_lows = lows[-10:]
+        if max(recent_highs[-3:]) < max(recent_highs[:-3]) * 0.999:  # deux sommets proches
+            patterns.append({
+                "pattern": "Double Top détecté",
+                "confiance": "moyenne+",
+                "type": "vente"
+            })
+        if min(recent_lows[-3:]) > min(recent_lows[:-3]) * 1.001:  # deux creux proches
+            patterns.append({
+                "pattern": "Double Bottom détecté",
+                "confiance": "moyenne+",
+                "type": "achat"
+            })
+
+    return patterns
+
+# --------------------- 3. CONSTRUCTION DU SIGNAL ---------------------
+def build_signal(price, pattern_info):
+    if pattern_info["type"] == "achat":
+        entree = price * 1.001
+        sl = price * 0.993
+        tp1 = price * 1.010
+        tp2 = price * 1.018
+        tp3 = price * 1.027
+        tp4 = price * 1.037
+    else:  # vente
+        entree = price * 0.999
+        sl = price * 1.007
+        tp1 = price * 0.990
+        tp2 = price * 0.982
+        tp3 = price * 0.973
+        tp4 = price * 0.963
+
+    return {
+        "pattern": pattern_info["pattern"],
+        "prix": round(price, 2),
+        "entree": round(entree, 2),
+        "sl": round(sl, 2),
+        "tp1": round(tp1, 2),
+        "tp2": round(tp2, 2),
+        "tp3": round(tp3, 2),
+        "tp4": round(tp4, 2),
+        "timestamp": datetime.now(TZ).strftime("%H:%M")
+    }
+
+# --------------------- 4. ENVOI TELEGRAM ---------------------
+def send_alert(signal):
+    if not TOKEN or not CHAT_ID:
+        return
+    message = f"""🔥 *SIGNAL XAUUSD* 🔥
+🕐 {signal['timestamp']}
+
+▫️ Pattern : {signal['pattern']}
+💵 Prix actuel : {signal['prix']}
+
+⬆️ Entrée : {signal['entree']}
+🛑 Stop Loss : {signal['sl']}
+🎯 TP1 : {signal['tp1']}
+🎯 TP2 : {signal['tp2']}
+🎯 TP3 : {signal['tp3']}
+🎯 TP4 : {signal['tp4']}
+"""
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    requests.post(url, json={"chat_id": CHAT_ID, "text": msg})
+    try:
+        r = requests.post(url, json={
+            "chat_id": CHAT_ID,
+            "text": message,
+            "parse_mode": "Markdown"
+        })
+        if r.status_code == 200:
+            print("✅ Signal envoyé avec succès")
+        else:
+            print(f"❌ Erreur Telegram : {r.text}")
+    except Exception as e:
+        print(f"❌ Erreur envoi : {e}")
 
-if __name__ == "__main__":
-    send_test()
+# --------------------- 5. BOUCLE PRINCIPALE ---------------------
+if name == "main":print("🚀 Bot XAUUSD (patterns) démarré...")
+    # Envoi d'un message de démarrage
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+            json={"chat_id": CHAT_ID, "text": "✅ Bot Patterns XAUUSD en ligne !"}
+        )
+    except:
+        pass
+
     while True:
+        try:
+            price, df = get_price_and_history()
+            if price is not None:
+                patterns = detect_patterns(df)
+                for pat in patterns:
+                    signal = build_signal(price, pat)
+                    send_alert(signal)
+                print(f"[{datetime.now(TZ).strftime('%H:%M')}] Scan terminé – {len(patterns)} pattern(s)")
+            else:
+                print("⚠️ Données de prix indisponibles")
+        except Exception as e:
+            print(f"❌ Erreur boucle : {e}")
         time.sleep(INTERVAL * 60)
-        send_test()
