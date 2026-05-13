@@ -11,48 +11,25 @@ TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 INTERVAL = int(os.getenv("CHECK_INTERVAL_MINUTES", "5"))
 TZ = pytz.timezone(os.getenv("TIMEZONE", "Europe/Paris"))
-TWELVE_KEY = os.getenv("TWELVE_DATA_API_KEY", "")
 
-# --------------------- 1. PRIX SPOT VIA TWELVE DATA ---------------------
-def get_spot_price():
-    """Récupère le prix spot XAU/USD via Twelve Data."""
-    if not TWELVE_KEY:
-        # Fallback sur Yahoo si pas de clé
-        try:
-            ticker = yf.Ticker("GC=F")
-            price = ticker.history(period="1d", interval="15m")['Close'].iloc[-1]
-            if price > 4000:
-                price = price / 2
-            return price
-        except:
-            return None
+# --------------------- SYMBOLE --------------------
+SYMBOL = "GC=F"   # Future Gold (celui que tu trades)
 
+# --------------------- 1. RÉCUPÉRATION DES DONNÉES ---------------------
+def get_price_and_history():
+    """Récupère le prix actuel ET l'historique depuis le même symbole."""
     try:
-        url = f"https://api.twelvedata.com/price?symbol=XAU/USD&apikey={TWELVE_KEY}"
-        resp = requests.get(url)
-        data = resp.json()
-        if "price" in data:
-            return float(data["price"])
-        else:
-            print("Twelve Data error:", data)
-            return None
-    except Exception as e:
-        print(f"Erreur Twelve Data : {e}")
-        return None
-
-# --------------------- 2. HISTORIQUE BOUGIES (YAHOO) ---------------------
-def get_price_history():
-    """Récupère l'historique 15min pour les patterns (via GC=F)."""
-    try:
-        ticker = yf.Ticker("GC=F")
+        ticker = yf.Ticker(SYMBOL)
         df = ticker.history(period="5d", interval="15m")
         if df.empty:
-            return None
-        return df
-    except:
-        return None
+            return None, None
+        price = df['Close'].iloc[-1]
+        return price, df
+    except Exception as e:
+        print(f"Erreur Yahoo : {e}")
+        return None, None
 
-# --------------------- 3. DÉTECTION DE PATTERNS ---------------------
+# --------------------- 2. DÉTECTION DE PATTERNS (AVANCÉE) ---------------------
 def detect_patterns(df):
     patterns = []
     if df is None or len(df) < 10:
@@ -63,31 +40,55 @@ def detect_patterns(df):
     highs = df['High']
     lows = df['Low']
 
+    # --- FVG (Fair Value Gap) baissier ---
+    for i in range(2, len(df)-1):
+        # FVG baissier : gap entre bas de i-2 et haut de i
+        if lows[i-2] > highs[i]:
+            fvg_top = lows[i-2]
+            fvg_bottom = highs[i]
+            # Attendre que le prix revienne dans le FVG
+            if closes[i] <= fvg_top and closes[i] >= fvg_bottom:
+                patterns.append({
+                    "pattern": "FVG baissier comblé",
+                    "confiance": "élevée",
+                    "type": "vente"
+                })
+                break
+
+    # --- FVG haussier ---
+    for i in range(2, len(df)-1):
+        if highs[i-2] < lows[i]:
+            fvg_bottom = highs[i-2]
+            fvg_top = lows[i]
+            if closes[i] >= fvg_bottom and closes[i] <= fvg_top:
+                patterns.append({
+                    "pattern": "FVG haussier comblé",
+                    "confiance": "élevée",
+                    "type": "achat"
+                })
+                break
+
     # --- Order Block (engulfing) haussier ET baissier ---
     for i in range(2, len(df)-2):
         # Engulfing haussier
-        if (closes[i] > opens[i] and                     # bougie i verte
-            closes[i-1] < opens[i-1] and                 # bougie i-1 rouge
-            closes[i] > opens[i-1] and                   # la verte avale la rouge
-            opens[i] < closes[i-1]):
+        if (closes[i] > opens[i] and closes[i-1] < opens[i-1] and
+            closes[i] > opens[i-1] and opens[i] < closes[i-1]):
             patterns.append({
                 "pattern": "Order Block haussier (15min)",
                 "confiance": "moyenne",
                 "type": "achat"
             })
-            break   # <-- enlève ce 'break' si tu veux détecter plusieurs signaux à la fois
+            break
 
         # Engulfing baissier
-        if (closes[i] < opens[i] and                     # bougie i rouge
-            closes[i-1] > opens[i-1] and                 # bougie i-1 verte
-            opens[i] > closes[i-1] and                   # la rouge ouvre au-dessus de la clôture verte
-            closes[i] < opens[i-1]):                     # et clôture sous l'ouverture verte
+        if (closes[i] < opens[i] and closes[i-1] > opens[i-1] and
+            opens[i] > closes[i-1] and closes[i] < opens[i-1]):
             patterns.append({
                 "pattern": "Order Block baissier (15min)",
                 "confiance": "moyenne",
                 "type": "vente"
             })
-            break   # idem, optionnel
+            break
 
     # --- Double Top / Double Bottom (inchangé) ---
     if len(df) >= 10:
@@ -108,36 +109,7 @@ def detect_patterns(df):
 
     return patterns
 
-    # --- Order Block haussier simplifié ---
-    for i in range(2, len(df)-2):
-        if closes[i] > opens[i] and closes[i-1] < opens[i-1] and closes[i] > opens[i-1]:
-            patterns.append({
-                "pattern": "Order Block haussier (15min)",
-                "confiance": "moyenne",
-                "type": "achat"
-            })
-            break
-
-    # --- Double Top / Double Bottom ---
-    if len(df) >= 10:
-        recent_highs = highs[-10:]
-        recent_lows = lows[-10:]
-        if max(recent_highs[-3:]) < max(recent_highs[:-3]) * 0.999:
-            patterns.append({
-                "pattern": "Double Top détecté",
-                "confiance": "moyenne+",
-                "type": "vente"
-            })
-        if min(recent_lows[-3:]) > min(recent_lows[:-3]) * 1.001:
-            patterns.append({
-                "pattern": "Double Bottom détecté",
-                "confiance": "moyenne+",
-                "type": "achat"
-            })
-
-    return patterns
-
-# --------------------- 4. CONSTRUCTION DU SIGNAL ---------------------
+# --------------------- 3. CONSTRUCTION DU SIGNAL ---------------------
 def build_signal(price, pattern_info):
     if pattern_info["type"] == "achat":
         entree = price * 1.001
@@ -166,7 +138,7 @@ def build_signal(price, pattern_info):
         "timestamp": datetime.now(TZ).strftime("%H:%M")
     }
 
-# --------------------- 5. ENVOI TELEGRAM ---------------------
+# --------------------- 4. ENVOI TELEGRAM ---------------------
 def send_alert(signal):
     if not TOKEN or not CHAT_ID:
         return
@@ -174,8 +146,11 @@ def send_alert(signal):
         f"🔥 *SIGNAL XAUUSD* 🔥\n"
         f"🕐 {signal['timestamp']}\n\n"
         f"▫️ Pattern : {signal['pattern']}\n"
-        f"💵 Prix spot : {signal['prix']}\n\n"
-        f"⬆️ Entrée : {signal['entree']}\n"
+        f"💵 Prix : {signal['prix']}\n\n"
+        f"⬆️ Entrée : {signal['entree']}\n" if signal['entree'] > signal['prix'] else
+        f"⬇️ Entrée : {signal['entree']}\n"
+    )
+    message += (
         f"🛑 Stop Loss : {signal['sl']}\n"
         f"🎯 TP1 : {signal['tp1']}\n"
         f"🎯 TP2 : {signal['tp2']}\n"
@@ -196,33 +171,28 @@ def send_alert(signal):
     except Exception as e:
         print(f"❌ Erreur envoi : {e}")
 
-# --------------------- 6. BOUCLE PRINCIPALE ---------------------
+# --------------------- 5. BOUCLE PRINCIPALE ---------------------
 if __name__ == "__main__":
-    print("🚀 Bot XAUUSD (Twelve Data spot) démarré...")
-    # Message de bienvenue
+    print("🚀 Bot XAUUSD Future (GC=F) démarré...")
     try:
         requests.post(
             f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-            json={"chat_id": CHAT_ID, "text": "✅ Bot Patterns XAUUSD en ligne (spot via Twelve Data) !"}
+            json={"chat_id": CHAT_ID, "text": "✅ Bot XAUUSD Future en ligne !"}
         )
-    except Exception:
+    except:
         pass
 
     while True:
         try:
-            # Récupère le prix spot via Twelve Data
-            spot_price = get_spot_price()
-            # Récupère l'historique depuis Yahoo (GC=F)
-            df = get_price_history()
-
-            if spot_price is not None and df is not None:
+            price, df = get_price_and_history()
+            if price is not None and df is not None:
                 patterns = detect_patterns(df)
                 for pat in patterns:
-                    signal = build_signal(spot_price, pat)
+                    signal = build_signal(price, pat)
                     send_alert(signal)
-                print(f"[{datetime.now(TZ).strftime('%H:%M')}] Prix spot: {spot_price} – {len(patterns)} pattern(s)")
+                print(f"[{datetime.now(TZ).strftime('%H:%M')}] Prix: {price} – {len(patterns)} pattern(s)")
             else:
-                print("⚠️ Données indisponibles (prix ou historique)")
+                print("⚠️ Données indisponibles")
         except Exception as e:
             print(f"❌ Erreur boucle : {e}")
 
