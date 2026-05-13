@@ -14,7 +14,7 @@ TZ = pytz.timezone(os.getenv("TIMEZONE", "Europe/Paris"))
 
 # --------------------- 1. RÉCUPÉRATION DU PRIX ---------------------
 def get_price_and_history():
-    ticker = yf.Ticker("XAUUSD=X")
+    ticker = yf.Ticker("GC=F")
     df = ticker.history(period="5d", interval="15m")
     if df.empty:
         return None, None
