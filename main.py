@@ -13,13 +13,18 @@ INTERVAL = int(os.getenv("CHECK_INTERVAL_MINUTES", "5"))
 TZ = pytz.timezone(os.getenv("TIMEZONE", "Europe/Paris"))
 
 # --------------------- 1. RÉCUPÉRATION DU PRIX ---------------------
-def get_price_and_history():
-    ticker = yf.Ticker("GC=F")
-    df = ticker.history(period="5d", interval="15m")
-    if df.empty:
-        return None, None
-    price = df['Close'].iloc[-1]
-    return price, df
+def get_spot_price():
+    # Récupère le prix spot via les futures GC=F et le ratio GLD/GC
+    try:
+        gc = yf.Ticker("GC=F")
+        gc_price = gc.history(period="1d", interval="15m")['Close'].iloc[-1]
+        # Si le prix est > 4000, on suppose que c'est le future x2 (ex: 4713 / 2 = 2356)
+        if gc_price > 4000:
+            return gc_price / 2
+        else:
+            return gc_price
+    except:
+        return None
 
 # --------------------- 2. DÉTECTION DE PATTERNS ---------------------
 def detect_patterns(df):
