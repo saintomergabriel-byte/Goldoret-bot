@@ -131,20 +131,36 @@ def detect_patterns(candles):
 
 # --------------------- 3. CONSTRUCTION DU SIGNAL ---------------------
 def build_signal(price, pattern_info):
+    # Récupération des distances en pips depuis les variables d'environnement
+    sl_pips = float(os.getenv("SL_PIPS", "50"))
+    tp1_pips = float(os.getenv("TP1_PIPS", "80"))
+    tp2_pips = float(os.getenv("TP2_PIPS", "120"))
+    tp3_pips = float(os.getenv("TP3_PIPS", "180"))
+    tp4_pips = float(os.getenv("TP4_PIPS", "250"))
+    entry_offset = float(os.getenv("ENTRY_OFFSET_PIPS", "20"))
+
+    # Conversion pips → dollars (1 pip = 0.01 pour XAUUSD)
+    sl_dist = sl_pips * 0.01
+    tp1_dist = tp1_pips * 0.01
+    tp2_dist = tp2_pips * 0.01
+    tp3_dist = tp3_pips * 0.01
+    tp4_dist = tp4_pips * 0.01
+    entry_dist = entry_offset * 0.01
+
     if pattern_info["type"] == "achat":
-        entree = round(price * 1.001, 2)
-        sl = round(price * 0.993, 2)
-        tp1 = round(price * 1.010, 2)
-        tp2 = round(price * 1.018, 2)
-        tp3 = round(price * 1.027, 2)
-        tp4 = round(price * 1.037, 2)
+        entree = round(price + entry_dist, 2)
+        sl = round(entree - sl_dist, 2)
+        tp1 = round(entree + tp1_dist, 2)
+        tp2 = round(entree + tp2_dist, 2)
+        tp3 = round(entree + tp3_dist, 2)
+        tp4 = round(entree + tp4_dist, 2)
     else:
-        entree = round(price * 0.999, 2)
-        sl = round(price * 1.007, 2)
-        tp1 = round(price * 0.990, 2)
-        tp2 = round(price * 0.982, 2)
-        tp3 = round(price * 0.973, 2)
-        tp4 = round(price * 0.963, 2)
+        entree = round(price - entry_dist, 2)
+        sl = round(entree + sl_dist, 2)
+        tp1 = round(entree - tp1_dist, 2)
+        tp2 = round(entree - tp2_dist, 2)
+        tp3 = round(entree - tp3_dist, 2)
+        tp4 = round(entree - tp4_dist, 2)
 
     return {
         "pattern": pattern_info["pattern"],
@@ -157,7 +173,6 @@ def build_signal(price, pattern_info):
         "tp4": tp4,
         "timestamp": datetime.now(TZ).strftime("%H:%M")
     }
-
 # --------------------- 4. ENVOI TELEGRAM ---------------------
 def send_alert(signal):
     if not TOKEN or not CHAT_ID:
