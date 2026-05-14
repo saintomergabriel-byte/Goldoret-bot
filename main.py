@@ -162,10 +162,19 @@ def build_signal(price, pattern_info):
 def send_alert(signal):
     if not TOKEN or not CHAT_ID:
         return
-    emoji = "⬆️" if signal['entree'] > signal['prix'] else "⬇️"
+
+    # Déterminer le bandeau
+    if signal['entree'] > signal['prix']:
+        type_msg = "🟢 ACHAT"
+        emoji = "⬆️"
+    else:
+        type_msg = "🔴 VENTE"
+        emoji = "⬇️"
+
     message = (
         f"🔥 *SIGNAL XAUUSD* 🔥\n"
-        f"🕐 {signal['timestamp']}\n\n"
+        f"🕐 {signal['timestamp']}\n"
+        f"{type_msg}\n\n"
         f"▫️ Pattern : {signal['pattern']}\n"
         f"💵 Prix spot : {signal['prix']}\n\n"
         f"{emoji} Entrée : {signal['entree']}\n"
@@ -175,15 +184,21 @@ def send_alert(signal):
         f"🎯 TP3 : {signal['tp3']}\n"
         f"🎯 TP4 : {signal['tp4']}\n"
     )
+
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     try:
-        r = requests.post(url, json={"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"})
+        r = requests.post(url, json={
+            "chat_id": CHAT_ID,
+            "text": message,
+            "parse_mode": "Markdown"
+        })
         if r.status_code == 200:
             print("✅ Signal envoyé avec succès")
         else:
             print(f"❌ Erreur Telegram : {r.text}")
     except Exception as e:
         print(f"❌ Erreur envoi : {e}")
+    
 
 # --------------------- 5. BOUCLE PRINCIPALE ---------------------
 if __name__ == "__main__":
