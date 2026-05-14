@@ -132,12 +132,12 @@ def detect_patterns(candles):
 # --------------------- 3. CONSTRUCTION DU SIGNAL ---------------------
 def build_signal(price, pattern_info):
     # Récupération des distances en pips depuis les variables d'environnement
-    sl_pips = float(os.getenv("SL_PIPS", "1000"))
-    tp1_pips = float(os.getenv("TP1_PIPS", "100"))
-    tp2_pips = float(os.getenv("TP2_PIPS", "150"))
-    tp3_pips = float(os.getenv("TP3_PIPS", "180"))
-    tp4_pips = float(os.getenv("TP4_PIPS", "250"))
-    entry_offset = float(os.getenv("ENTRY_OFFSET_PIPS", "20"))
+    sl_pips = float(os.getenv("SL_PIPS", "500"))
+    tp1_pips = float(os.getenv("TP1_PIPS", "400"))
+    tp2_pips = float(os.getenv("TP2_PIPS", "700"))
+    tp3_pips = float(os.getenv("TP3_PIPS", "1000"))
+    tp4_pips = float(os.getenv("TP4_PIPS", "1500"))
+    entry_offset = float(os.getenv("ENTRY_OFFSET_PIPS", "30"))
 
     # Conversion pips → dollars (1 pip = 0.01 pour XAUUSD)
     sl_dist = sl_pips * 0.01
