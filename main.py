@@ -133,8 +133,8 @@ def detect_patterns(candles):
 def build_signal(price, pattern_info):
     # Récupération des distances en pips depuis les variables d'environnement
     sl_pips = float(os.getenv("SL_PIPS", "50"))
-    tp1_pips = float(os.getenv("TP1_PIPS", "80"))
-    tp2_pips = float(os.getenv("TP2_PIPS", "120"))
+    tp1_pips = float(os.getenv("TP1_PIPS", "100"))
+    tp2_pips = float(os.getenv("TP2_PIPS", "150"))
     tp3_pips = float(os.getenv("TP3_PIPS", "180"))
     tp4_pips = float(os.getenv("TP4_PIPS", "250"))
     entry_offset = float(os.getenv("ENTRY_OFFSET_PIPS", "20"))
