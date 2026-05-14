@@ -1,52 +1,75 @@
 import os
 import time
 import requests
-import yfinance as yf
-import pandas as pd
 import pytz
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # --------------------- CONFIG ---------------------
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 INTERVAL = int(os.getenv("CHECK_INTERVAL_MINUTES", "5"))
 TZ = pytz.timezone(os.getenv("TIMEZONE", "Europe/Paris"))
-
-# --------------------- SYMBOLE --------------------
-SYMBOL = "GC=F"   # Future Gold (celui que tu trades)
+TWELVE_KEY = os.getenv("TWELVE_DATA_API_KEY")
 
 # --------------------- 1. RÉCUPÉRATION DES DONNÉES ---------------------
-def get_price_and_history():
-    """Récupère le prix actuel ET l'historique depuis le même symbole."""
-    try:
-        ticker = yf.Ticker(SYMBOL)
-        df = ticker.history(period="5d", interval="15m")
-        if df.empty:
-            return None, None
-        price = df['Close'].iloc[-1]
-        return price, df
-    except Exception as e:
-        print(f"Erreur Yahoo : {e}")
+def get_price_and_candles():
+    """Récupère le prix spot actuel et les 50 dernières bougies 15min."""
+    if not TWELVE_KEY:
+        print("❌ Clé Twelve Data manquante !")
         return None, None
 
-# --------------------- 2. DÉTECTION DE PATTERNS (AVANCÉE) ---------------------
-def detect_patterns(df):
+    # Prix spot
+    try:
+        resp = requests.get(f"https://api.twelvedata.com/price?symbol=XAU/USD&apikey={TWELVE_KEY}")
+        data = resp.json()
+        if "price" in data:
+            spot = float(data["price"])
+        else:
+            print("Erreur prix:", data)
+            return None, None
+    except Exception as e:
+        print(f"Erreur requête prix: {e}")
+        return None, None
+
+    # Historique 15min (50 bougies = ~12h)
+    try:
+        resp = requests.get(
+            f"https://api.twelvedata.com/time_series?symbol=XAU/USD&interval=15min&outputsize=50&apikey={TWELVE_KEY}"
+        )
+        data = resp.json()
+        if "values" not in data:
+            print("Erreur historique:", data)
+            return spot, None
+        candles = []
+        for bar in data["values"]:
+            candles.append({
+                "open": float(bar["open"]),
+                "high": float(bar["high"]),
+                "low": float(bar["low"]),
+                "close": float(bar["close"])
+            })
+        candles.reverse()  # du plus ancien au plus récent
+        return spot, candles
+    except Exception as e:
+        print(f"Erreur historique: {e}")
+        return spot, None
+
+# --------------------- 2. DÉTECTION DE PATTERNS ---------------------
+def detect_patterns(candles):
     patterns = []
-    if df is None or len(df) < 10:
+    if not candles or len(candles) < 10:
         return patterns
 
-    closes = df['Close']
-    opens = df['Open']
-    highs = df['High']
-    lows = df['Low']
+    closes = [c["close"] for c in candles]
+    opens = [c["open"] for c in candles]
+    highs = [c["high"] for c in candles]
+    lows = [c["low"] for c in candles]
 
-    # --- FVG (Fair Value Gap) baissier ---
-    for i in range(2, len(df)-1):
-        # FVG baissier : gap entre bas de i-2 et haut de i
+    # --- FVG baissier ---
+    for i in range(2, len(candles)-1):
         if lows[i-2] > highs[i]:
             fvg_top = lows[i-2]
             fvg_bottom = highs[i]
-            # Attendre que le prix revienne dans le FVG
             if closes[i] <= fvg_top and closes[i] >= fvg_bottom:
                 patterns.append({
                     "pattern": "FVG baissier comblé",
@@ -56,7 +79,7 @@ def detect_patterns(df):
                 break
 
     # --- FVG haussier ---
-    for i in range(2, len(df)-1):
+    for i in range(2, len(candles)-1):
         if highs[i-2] < lows[i]:
             fvg_bottom = highs[i-2]
             fvg_top = lows[i]
@@ -68,9 +91,8 @@ def detect_patterns(df):
                 })
                 break
 
-    # --- Order Block (engulfing) haussier ET baissier ---
-    for i in range(2, len(df)-2):
-        # Engulfing haussier
+    # --- Order Block haussier/baissier ---
+    for i in range(2, len(candles)-2):
         if (closes[i] > opens[i] and closes[i-1] < opens[i-1] and
             closes[i] > opens[i-1] and opens[i] < closes[i-1]):
             patterns.append({
@@ -79,8 +101,6 @@ def detect_patterns(df):
                 "type": "achat"
             })
             break
-
-        # Engulfing baissier
         if (closes[i] < opens[i] and closes[i-1] > opens[i-1] and
             opens[i] > closes[i-1] and closes[i] < opens[i-1]):
             patterns.append({
@@ -90,8 +110,8 @@ def detect_patterns(df):
             })
             break
 
-    # --- Double Top / Double Bottom (inchangé) ---
-    if len(df) >= 10:
+    # --- Double Top / Double Bottom ---
+    if len(candles) >= 10:
         recent_highs = highs[-10:]
         recent_lows = lows[-10:]
         if max(recent_highs[-3:]) < max(recent_highs[:-3]) * 0.999:
@@ -112,29 +132,29 @@ def detect_patterns(df):
 # --------------------- 3. CONSTRUCTION DU SIGNAL ---------------------
 def build_signal(price, pattern_info):
     if pattern_info["type"] == "achat":
-        entree = price * 1.001
-        sl = price * 0.993
-        tp1 = price * 1.010
-        tp2 = price * 1.018
-        tp3 = price * 1.027
-        tp4 = price * 1.037
+        entree = round(price * 1.001, 2)
+        sl = round(price * 0.993, 2)
+        tp1 = round(price * 1.010, 2)
+        tp2 = round(price * 1.018, 2)
+        tp3 = round(price * 1.027, 2)
+        tp4 = round(price * 1.037, 2)
     else:
-        entree = price * 0.999
-        sl = price * 1.007
-        tp1 = price * 0.990
-        tp2 = price * 0.982
-        tp3 = price * 0.973
-        tp4 = price * 0.963
+        entree = round(price * 0.999, 2)
+        sl = round(price * 1.007, 2)
+        tp1 = round(price * 0.990, 2)
+        tp2 = round(price * 0.982, 2)
+        tp3 = round(price * 0.973, 2)
+        tp4 = round(price * 0.963, 2)
 
     return {
         "pattern": pattern_info["pattern"],
         "prix": round(price, 2),
-        "entree": round(entree, 2),
-        "sl": round(sl, 2),
-        "tp1": round(tp1, 2),
-        "tp2": round(tp2, 2),
-        "tp3": round(tp3, 2),
-        "tp4": round(tp4, 2),
+        "entree": entree,
+        "sl": sl,
+        "tp1": tp1,
+        "tp2": tp2,
+        "tp3": tp3,
+        "tp4": tp4,
         "timestamp": datetime.now(TZ).strftime("%H:%M")
     }
 
@@ -142,15 +162,13 @@ def build_signal(price, pattern_info):
 def send_alert(signal):
     if not TOKEN or not CHAT_ID:
         return
+    emoji = "⬆️" if signal['entree'] > signal['prix'] else "⬇️"
     message = (
         f"🔥 *SIGNAL XAUUSD* 🔥\n"
         f"🕐 {signal['timestamp']}\n\n"
         f"▫️ Pattern : {signal['pattern']}\n"
-        f"💵 Prix : {signal['prix']}\n\n"
-        f"⬆️ Entrée : {signal['entree']}\n" if signal['entree'] > signal['prix'] else
-        f"⬇️ Entrée : {signal['entree']}\n"
-    )
-    message += (
+        f"💵 Prix spot : {signal['prix']}\n\n"
+        f"{emoji} Entrée : {signal['entree']}\n"
         f"🛑 Stop Loss : {signal['sl']}\n"
         f"🎯 TP1 : {signal['tp1']}\n"
         f"🎯 TP2 : {signal['tp2']}\n"
@@ -159,11 +177,7 @@ def send_alert(signal):
     )
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     try:
-        r = requests.post(url, json={
-            "chat_id": CHAT_ID,
-            "text": message,
-            "parse_mode": "Markdown"
-        })
+        r = requests.post(url, json={"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"})
         if r.status_code == 200:
             print("✅ Signal envoyé avec succès")
         else:
@@ -173,20 +187,20 @@ def send_alert(signal):
 
 # --------------------- 5. BOUCLE PRINCIPALE ---------------------
 if __name__ == "__main__":
-    print("🚀 Bot XAUUSD Future (GC=F) démarré...")
+    print("🚀 Bot XAUUSD (Twelve Data) démarré...")
     try:
         requests.post(
             f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-            json={"chat_id": CHAT_ID, "text": "✅ Bot XAUUSD Future en ligne !"}
+            json={"chat_id": CHAT_ID, "text": "✅ Bot XAUUSD en ligne (spot + patterns via Twelve Data) !"}
         )
     except:
         pass
 
     while True:
         try:
-            price, df = get_price_and_history()
-            if price is not None and df is not None:
-                patterns = detect_patterns(df)
+            price, candles = get_price_and_candles()
+            if price is not None and candles is not None:
+                patterns = detect_patterns(candles)
                 for pat in patterns:
                     signal = build_signal(price, pat)
                     send_alert(signal)
