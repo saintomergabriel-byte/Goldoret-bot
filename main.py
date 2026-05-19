@@ -2,7 +2,7 @@ import os
 import time
 import requests
 import pytz
-from datetime import datetime, timedelta
+from datetime import datetime
 
 # --------------------- CONFIG ---------------------
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -11,7 +11,15 @@ INTERVAL = int(os.getenv("CHECK_INTERVAL_MINUTES", "5"))
 TZ = pytz.timezone(os.getenv("TIMEZONE", "Europe/Paris"))
 TWELVE_KEY = os.getenv("TWELVE_DATA_API_KEY")
 
-# --------------------- 1. RÉCUPÉRATION DES DONNÉES ---------------------
+# Distances façon Davo (en pips, 1 pip = 0.01 $ pour XAUUSD)
+SL_PIPS = int(os.getenv("SL_PIPS", "3000"))        # 30 points
+TP1_PIPS = int(os.getenv("TP1_PIPS", "200"))       # 2 points
+TP2_PIPS = int(os.getenv("TP2_PIPS", "400"))       # 4 points
+TP3_PIPS = int(os.getenv("TP3_PIPS", "800"))       # 8 points
+TP4_PIPS = int(os.getenv("TP4_PIPS", "1200"))      # optionnel
+ENTRY_OFFSET_PIPS = int(os.getenv("ENTRY_OFFSET_PIPS", "50"))
+
+# --------------------- 1. RÉCUPÉRATION DES DONNÉES (100% Twelve Data) ---------------------
 def get_price_and_candles():
     """Récupère le prix spot actuel et les 50 dernières bougies 15min."""
     if not TWELVE_KEY:
@@ -31,7 +39,7 @@ def get_price_and_candles():
         print(f"Erreur requête prix: {e}")
         return None, None
 
-    # Historique 15min (50 bougies = ~12h)
+    # Historique 15min (50 bougies)
     try:
         resp = requests.get(
             f"https://api.twelvedata.com/time_series?symbol=XAU/USD&interval=15min&outputsize=50&apikey={TWELVE_KEY}"
@@ -54,7 +62,7 @@ def get_price_and_candles():
         print(f"Erreur historique: {e}")
         return spot, None
 
-# --------------------- 2. DÉTECTION DE PATTERNS ---------------------
+# --------------------- 2. DÉTECTION DE PATTERNS (FAÇON DAVO) ---------------------
 def detect_patterns(candles):
     patterns = []
     if not candles or len(candles) < 10:
@@ -65,11 +73,12 @@ def detect_patterns(candles):
     highs = [c["high"] for c in candles]
     lows = [c["low"] for c in candles]
 
-    # --- FVG baissier ---
+    # --- FVG baissier (gap entre bas de i-2 et haut de i) ---
     for i in range(2, len(candles)-1):
         if lows[i-2] > highs[i]:
             fvg_top = lows[i-2]
             fvg_bottom = highs[i]
+            # Le prix est redescendu dans la zone → entrée
             if closes[i] <= fvg_top and closes[i] >= fvg_bottom:
                 patterns.append({
                     "pattern": "FVG baissier comblé",
@@ -78,7 +87,7 @@ def detect_patterns(candles):
                 })
                 break
 
-    # --- FVG haussier ---
+    # --- FVG haussier (gap entre haut de i-2 et bas de i) ---
     for i in range(2, len(candles)-1):
         if highs[i-2] < lows[i]:
             fvg_bottom = highs[i-2]
@@ -91,61 +100,56 @@ def detect_patterns(candles):
                 })
                 break
 
-    # --- Order Block haussier/baissier ---
+    # --- Order Block baissier (engulfing baissier) ---
     for i in range(2, len(candles)-2):
-        if (closes[i] > opens[i] and closes[i-1] < opens[i-1] and
-            closes[i] > opens[i-1] and opens[i] < closes[i-1]):
-            patterns.append({
-                "pattern": "Order Block haussier (15min)",
-                "confiance": "moyenne",
-                "type": "achat"
-            })
-            break
         if (closes[i] < opens[i] and closes[i-1] > opens[i-1] and
             opens[i] > closes[i-1] and closes[i] < opens[i-1]):
             patterns.append({
-                "pattern": "Order Block baissier (15min)",
-                "confiance": "moyenne",
+                "pattern": "Order Block baissier",
+                "confiance": "moyenne+",
                 "type": "vente"
             })
             break
 
-    # --- Double Top / Double Bottom ---
+    # --- Order Block haussier (engulfing haussier) ---
+    for i in range(2, len(candles)-2):
+        if (closes[i] > opens[i] and closes[i-1] < opens[i-1] and
+            closes[i] > opens[i-1] and opens[i] < closes[i-1]):
+            patterns.append({
+                "pattern": "Order Block haussier",
+                "confiance": "moyenne+",
+                "type": "achat"
+            })
+            break
+
+    # --- Double Top / Double Bottom (optionnel) ---
     if len(candles) >= 10:
         recent_highs = highs[-10:]
         recent_lows = lows[-10:]
         if max(recent_highs[-3:]) < max(recent_highs[:-3]) * 0.999:
             patterns.append({
-                "pattern": "Double Top détecté",
+                "pattern": "Double Top",
                 "confiance": "moyenne+",
                 "type": "vente"
             })
         if min(recent_lows[-3:]) > min(recent_lows[:-3]) * 1.001:
             patterns.append({
-                "pattern": "Double Bottom détecté",
+                "pattern": "Double Bottom",
                 "confiance": "moyenne+",
                 "type": "achat"
             })
 
     return patterns
 
-# --------------------- 3. CONSTRUCTION DU SIGNAL ---------------------
+# --------------------- 3. CONSTRUCTION DU SIGNAL (FAÇON DAVO) ---------------------
 def build_signal(price, pattern_info):
-    # Récupération des distances en pips depuis les variables d'environnement
-    sl_pips = float(os.getenv("SL_PIPS", "500"))
-    tp1_pips = float(os.getenv("TP1_PIPS", "400"))
-    tp2_pips = float(os.getenv("TP2_PIPS", "700"))
-    tp3_pips = float(os.getenv("TP3_PIPS", "1000"))
-    tp4_pips = float(os.getenv("TP4_PIPS", "1500"))
-    entry_offset = float(os.getenv("ENTRY_OFFSET_PIPS", "30"))
-
     # Conversion pips → dollars (1 pip = 0.01 pour XAUUSD)
-    sl_dist = sl_pips * 0.01
-    tp1_dist = tp1_pips * 0.01
-    tp2_dist = tp2_pips * 0.01
-    tp3_dist = tp3_pips * 0.01
-    tp4_dist = tp4_pips * 0.01
-    entry_dist = entry_offset * 0.01
+    sl_dist = SL_PIPS * 0.01
+    tp1_dist = TP1_PIPS * 0.01
+    tp2_dist = TP2_PIPS * 0.01
+    tp3_dist = TP3_PIPS * 0.01
+    tp4_dist = TP4_PIPS * 0.01
+    entry_dist = ENTRY_OFFSET_PIPS * 0.01
 
     if pattern_info["type"] == "achat":
         entree = round(price + entry_dist, 2)
@@ -173,23 +177,15 @@ def build_signal(price, pattern_info):
         "tp4": tp4,
         "timestamp": datetime.now(TZ).strftime("%H:%M")
     }
+
 # --------------------- 4. ENVOI TELEGRAM ---------------------
 def send_alert(signal):
     if not TOKEN or not CHAT_ID:
         return
-
-    # Déterminer le bandeau
-    if signal['entree'] > signal['prix']:
-        type_msg = "🟢 ACHAT"
-        emoji = "⬆️"
-    else:
-        type_msg = "🔴 VENTE"
-        emoji = "⬇️"
-
+    emoji = "⬆️" if signal['entree'] > signal['prix'] else "⬇️"
     message = (
         f"🔥 *SIGNAL XAUUSD* 🔥\n"
-        f"🕐 {signal['timestamp']}\n"
-        f"{type_msg}\n\n"
+        f"🕐 {signal['timestamp']}\n\n"
         f"▫️ Pattern : {signal['pattern']}\n"
         f"💵 Prix spot : {signal['prix']}\n\n"
         f"{emoji} Entrée : {signal['entree']}\n"
@@ -199,29 +195,23 @@ def send_alert(signal):
         f"🎯 TP3 : {signal['tp3']}\n"
         f"🎯 TP4 : {signal['tp4']}\n"
     )
-
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     try:
-        r = requests.post(url, json={
-            "chat_id": CHAT_ID,
-            "text": message,
-            "parse_mode": "Markdown"
-        })
+        r = requests.post(url, json={"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"})
         if r.status_code == 200:
             print("✅ Signal envoyé avec succès")
         else:
             print(f"❌ Erreur Telegram : {r.text}")
     except Exception as e:
         print(f"❌ Erreur envoi : {e}")
-    
 
 # --------------------- 5. BOUCLE PRINCIPALE ---------------------
 if __name__ == "__main__":
-    print("🚀 Bot XAUUSD (Twelve Data) démarré...")
+    print("🚀 Bot XAUUSD (Davo-like) démarré...")
     try:
         requests.post(
             f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-            json={"chat_id": CHAT_ID, "text": "✅ Bot XAUUSD en ligne (spot + patterns via Twelve Data) !"}
+            json={"chat_id": CHAT_ID, "text": "✅ Bot Davo-like en ligne !"}
         )
     except:
         pass
