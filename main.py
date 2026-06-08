@@ -482,25 +482,56 @@ def send_alert(signal):
         print("TOKEN ou CHAT_ID manquant.")
         return False
 
+    if signal["side"] == "BUY":
+        side_icon = "🟢"
+        side_text = "ACHAT"
+        action_text = "Chercher une entrée BUY sur retest"
+    else:
+        side_icon = "🔴"
+        side_text = "VENTE"
+        action_text = "Chercher une entrée SELL sur retest"
+
     message = (
-        f"XAUUSD PREMIUM ORDER BLOCK {signal['side']}\n"
-        f"Heure: {now_local().strftime('%H:%M')}\n\n"
-        f"Score: {signal['score']}/100\n"
-        f"Prix spot: {signal['spot']}\n"
-        f"Zone OB: {signal['zone_low']} - {signal['zone_high']}\n"
-        f"Entrée indicative: {signal['entry']}\n"
-        f"Stop-loss: {signal['sl']}\n"
-        f"TP1: {signal['tp1']}\n"
-        f"TP2: {signal['tp2']}\n"
-        f"TP3: {signal['tp3']}\n"
-        f"TP4: {signal['tp4']}\n\n"
-        f"Tendance: {signal['trend']}\n"
-        f"Session: {signal['session']}\n"
-        f"Raison: {signal['details']}\n\n"
-        f"Lot théorique: {signal['lot']} lot ≈ {signal['micro_lots']} micro-lots\n"
-        f"Risque estimé: {signal['risk_estimated']} {ACCOUNT_CURRENCY}\n"
-        f"Sécurité: {signal['risk_warning']}\n\n"
-        f"Signal informatif. Vérification manuelle obligatoire."
+        f"🔥 XAUUSD PREMIUM ORDER BLOCK 🔥\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"{side_icon} Signal : {side_text}\n"
+        f"🕐 Heure : {now_local().strftime('%H:%M')}\n"
+        f"⭐ Score : {signal['score']}/100\n\n"
+
+        f"📍 ZONE DE TRADING\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"💰 Prix spot : {signal['spot']}\n"
+        f"🧱 Zone OB : {signal['zone_low']} → {signal['zone_high']}\n"
+        f"🎯 Entrée indicative : {signal['entry']}\n"
+        f"🛑 Stop-loss : {signal['sl']}\n\n"
+
+        f"🎯 OBJECTIFS\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"🥇 TP1 : {signal['tp1']}\n"
+        f"🥈 TP2 : {signal['tp2']}\n"
+        f"🥉 TP3 : {signal['tp3']}\n"
+        f"🏆 TP4 : {signal['tp4']}\n\n"
+
+        f"📊 CONTEXTE\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📉 Tendance : {signal['trend']}\n"
+        f"⏰ Session : {signal['session']}\n"
+        f"🧠 Raison : {signal['details']}\n\n"
+
+        f"💼 MONEY MANAGEMENT\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📦 Lot théorique : {signal['lot']} lot\n"
+        f"🔹 Micro-lots : {signal['micro_lots']}\n"
+        f"🧮 Risque estimé : {signal['risk_estimated']} {ACCOUNT_CURRENCY}\n"
+        f"⚠️ Sécurité : {signal['risk_warning']}\n\n"
+
+        f"✅ PLAN\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"➡️ Action : {action_text}\n"
+        f"🚫 Ne pas entrer si le prix est déjà trop loin.\n"
+        f"👀 Vérifie le risque chez le courtier avant validation.\n\n"
+
+        f"⚠️ Signal informatif, aucune garantie de profit."
     )
 
     try:
