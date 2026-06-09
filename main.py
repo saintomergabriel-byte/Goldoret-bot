@@ -586,4 +586,94 @@ def send_alert(signal):
 
         f"📊 CONTEXTE\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"📈 Tendance : {sign
+        f"📈 Tendance : {signal['trend']}\n"
+        f"⏰ Session : {signal['session']}\n"
+        f"🧠 Raison : {signal['details']}\n\n"
+
+        f"💼 MONEY MANAGEMENT\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📦 Lot théorique : {signal['lot']} lot\n"
+        f"🔹 Micro-lots : {signal['micro_lots']}\n"
+        f"🧮 Risque estimé : {signal['risk_estimated']} {ACCOUNT_CURRENCY}\n"
+        f"⚠️ Sécurité : {signal['risk_warning']}\n\n"
+
+        f"✅ PLAN\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"➡️ Action : {action_text}\n"
+        f"🚫 Ne pas entrer si le prix est déjà trop loin.\n"
+        f"👀 Vérifie le risque chez le courtier avant validation.\n\n"
+
+        f"⚠️ Signal informatif, aucune garantie de profit."
+    )
+
+    try:
+        response = requests.post(
+            f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+            json={"chat_id": CHAT_ID, "text": message},
+            timeout=20,
+        )
+
+        if response.status_code == 200:
+            log_print("✅ Signal premium OB envoyé.")
+            return True
+
+        log_print(f"❌ Erreur Telegram: {response.text}")
+        return False
+
+    except Exception as e:
+        log_print(f"❌ Erreur envoi Telegram: {e}")
+        return False
+
+
+# ==========================================================
+# 🚀 BOUCLE PRINCIPALE
+# ==========================================================
+if __name__ == "__main__":
+    log_print("🚀 Bot XAUUSD Premium Order Blocks démarré.")
+    log_print(
+        f"⚙️ Réglages: interval={INTERVAL}min | score_min={MIN_OB_SCORE} | "
+        f"sessions={ALLOWED_SESSIONS} | trend_filter={USE_TREND_FILTER} | "
+        f"max_distance={MAX_DISTANCE_FROM_ENTRY_POINTS} pts"
+    )
+
+    if SEND_STARTUP_MESSAGE and TOKEN and CHAT_ID:
+        try:
+            requests.post(
+                f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+                json={"chat_id": CHAT_ID, "text": "✅ Bot Premium Order Blocks en ligne."},
+                timeout=20,
+            )
+        except Exception:
+            pass
+
+    while True:
+        try:
+            spot, candles = get_price_and_candles()
+
+            if spot is None or candles is None:
+                log_print(f"[{now_local().strftime('%H:%M')}] ⚠️ Données indisponibles.")
+            else:
+                signal, reason = detect_premium_order_block(candles, spot)
+
+                if signal is None:
+                    log_print(f"[{now_local().strftime('%H:%M')}] Prix={spot} — pas de signal: {reason}")
+                else:
+                    price_ok, price_reason = price_not_too_far(signal)
+
+                    if not price_ok:
+                        log_print(f"[{now_local().strftime('%H:%M')}] ⏸️ {price_reason}")
+                        log_signal(signal, sent=False, reason=price_reason)
+                    else:
+                        allowed, spam_reason = can_send(signal)
+
+                        if not allowed:
+                            log_print(f"[{now_local().strftime('%H:%M')}] ⏸️ {spam_reason}")
+                            log_signal(signal, sent=False, reason=spam_reason)
+                        else:
+                            sent = send_alert(signal)
+                            log_signal(signal, sent=sent, reason="envoyé" if sent else "erreur envoi")
+
+        except Exception as e:
+            log_print(f"❌ Erreur boucle principale: {e}")
+
+        time.sleep(INTERVAL * 60)
