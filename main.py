@@ -6,7 +6,15 @@ import requests
 import pytz
 from datetime import datetime, time as dtime
 
-# ===================== CONFIG =====================
+# ==========================================================
+# 🔥 GOLDORET BOT — XAUUSD PREMIUM ORDER BLOCKS
+# ==========================================================
+# Ce bot envoie uniquement des signaux informatifs.
+# Il ne prend aucun trade automatiquement.
+# Vérification manuelle obligatoire avant toute entrée.
+# ==========================================================
+
+# --------------------- CONFIG GÉNÉRALE ---------------------
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 TWELVE_KEY = os.getenv("TWELVE_DATA_API_KEY")
@@ -15,22 +23,27 @@ TZ = pytz.timezone(os.getenv("TIMEZONE", "Europe/Paris"))
 INTERVAL = int(os.getenv("CHECK_INTERVAL_MINUTES", "5"))
 OUTPUTSIZE = int(os.getenv("TWELVE_OUTPUTSIZE", "220"))
 
-# Réglages Premium Order Blocks
+# --------------------- RÉGLAGES ORDER BLOCK PREMIUM ---------------------
 MIN_OB_SCORE = int(os.getenv("MIN_OB_SCORE", "75"))
 OB_LOOKBACK = int(os.getenv("OB_LOOKBACK", "80"))
 SWING_LOOKBACK = int(os.getenv("SWING_LOOKBACK", "10"))
 DISPLACEMENT_MULTIPLIER = float(os.getenv("DISPLACEMENT_MULTIPLIER", "1.5"))
 OB_RETEST_TOLERANCE_POINTS = float(os.getenv("OB_RETEST_TOLERANCE_POINTS", "1.0"))
 OB_SL_BUFFER_POINTS = float(os.getenv("OB_SL_BUFFER_POINTS", "1.0"))
+
+# ✅ Filtre important : ne pas envoyer si le prix est déjà trop loin de l’entrée
+MAX_DISTANCE_FROM_ENTRY_POINTS = float(os.getenv("MAX_DISTANCE_FROM_ENTRY_POINTS", "2.0"))
+
+# Anti-spam : évite d’envoyer le même signal trop souvent
 MIN_SECONDS_BETWEEN_SIGNALS = int(os.getenv("MIN_SECONDS_BETWEEN_SIGNALS", "3600"))
 
-# Filtres
+# --------------------- FILTRES ---------------------
 USE_TREND_FILTER = os.getenv("USE_TREND_FILTER", "true").lower() in ("1", "true", "yes", "oui")
 USE_SESSION_FILTER = os.getenv("USE_SESSION_FILTER", "true").lower() in ("1", "true", "yes", "oui")
 ALLOWED_SESSIONS = os.getenv("ALLOWED_SESSIONS", "08:00-11:30,14:30-17:30")
 SEND_STARTUP_MESSAGE = os.getenv("SEND_STARTUP_MESSAGE", "false").lower() in ("1", "true", "yes", "oui")
 
-# Money management approximatif XAUUSD
+# --------------------- MONEY MANAGEMENT APPROXIMATIF ---------------------
 ACCOUNT_BALANCE = float(os.getenv("ACCOUNT_BALANCE", "10000"))
 RISK_PERCENT = float(os.getenv("RISK_PERCENT", "0.25"))
 ACCOUNT_CURRENCY = os.getenv("ACCOUNT_CURRENCY", "EUR").upper()
@@ -43,7 +56,13 @@ STATE_FILE = "last_premium_ob_signal.json"
 LOG_FILE = "premium_ob_signals_log.csv"
 
 
-# ===================== OUTILS =====================
+# ==========================================================
+# 🧰 OUTILS
+# ==========================================================
+def log_print(text):
+    print(text, flush=True)
+
+
 def now_local():
     return datetime.now(TZ)
 
@@ -97,9 +116,26 @@ def log_signal(signal, sent, reason=""):
         writer = csv.DictWriter(
             f,
             fieldnames=[
-                "time", "sent", "reason", "side", "score", "entry", "sl",
-                "tp1", "tp2", "tp3", "tp4", "zone_low", "zone_high",
-                "trend", "session", "lot", "risk_estimated", "details"
+                "time",
+                "sent",
+                "reason",
+                "side",
+                "score",
+                "spot",
+                "entry",
+                "sl",
+                "tp1",
+                "tp2",
+                "tp3",
+                "tp4",
+                "zone_low",
+                "zone_high",
+                "trend",
+                "session",
+                "lot",
+                "risk_estimated",
+                "distance",
+                "details",
             ],
         )
 
@@ -112,6 +148,7 @@ def log_signal(signal, sent, reason=""):
             "reason": reason,
             "side": signal.get("side", ""),
             "score": signal.get("score", ""),
+            "spot": signal.get("spot", ""),
             "entry": signal.get("entry", ""),
             "sl": signal.get("sl", ""),
             "tp1": signal.get("tp1", ""),
@@ -124,6 +161,7 @@ def log_signal(signal, sent, reason=""):
             "session": signal.get("session", ""),
             "lot": signal.get("lot", ""),
             "risk_estimated": signal.get("risk_estimated", ""),
+            "distance": signal.get("distance_from_entry", ""),
             "details": signal.get("details", ""),
         })
 
@@ -147,10 +185,12 @@ def avg(values):
     return sum(values) / len(values)
 
 
-# ===================== DONNÉES TWELVE DATA =====================
+# ==========================================================
+# 📡 DONNÉES TWELVE DATA
+# ==========================================================
 def get_price_and_candles():
     if not TWELVE_KEY:
-        print("Clé Twelve Data manquante.")
+        log_print("❌ Clé Twelve Data manquante.")
         return None, None
 
     try:
@@ -162,13 +202,13 @@ def get_price_and_candles():
         price_data = price_resp.json()
 
         if "price" not in price_data:
-            print("Erreur prix:", price_data)
+            log_print(f"❌ Erreur prix Twelve Data: {price_data}")
             return None, None
 
         spot = float(price_data["price"])
 
     except Exception as e:
-        print(f"Erreur prix Twelve Data: {e}")
+        log_print(f"❌ Erreur prix Twelve Data: {e}")
         return None, None
 
     try:
@@ -180,7 +220,7 @@ def get_price_and_candles():
         data = candles_resp.json()
 
         if "values" not in data:
-            print("Erreur historique:", data)
+            log_print(f"❌ Erreur historique Twelve Data: {data}")
             return spot, None
 
         candles = []
@@ -198,11 +238,13 @@ def get_price_and_candles():
         return spot, candles
 
     except Exception as e:
-        print(f"Erreur bougies Twelve Data: {e}")
+        log_print(f"❌ Erreur bougies Twelve Data: {e}")
         return spot, None
 
 
-# ===================== TENDANCE =====================
+# ==========================================================
+# 📊 TENDANCE EMA 50 / EMA 200
+# ==========================================================
 def trend_context(candles):
     closes = [c["close"] for c in candles]
     last_close = closes[-1]
@@ -239,7 +281,9 @@ def trend_context(candles):
     }
 
 
-# ===================== OUTILS ORDER BLOCK =====================
+# ==========================================================
+# 🧱 OUTILS ORDER BLOCK
+# ==========================================================
 def candle_body(candle):
     return abs(candle["close"] - candle["open"])
 
@@ -264,7 +308,9 @@ def has_bearish_fvg(candles, displacement_index):
     return candles[displacement_index - 2]["low"] > candles[displacement_index]["high"]
 
 
-# ===================== MONEY MANAGEMENT =====================
+# ==========================================================
+# 💼 MONEY MANAGEMENT
+# ==========================================================
 def calculate_lot(entry, sl):
     stop_distance = abs(entry - sl)
 
@@ -316,7 +362,9 @@ def make_targets(side, entry, sl):
     )
 
 
-# ===================== DÉTECTION PREMIUM ORDER BLOCK =====================
+# ==========================================================
+# 🔥 DÉTECTION PREMIUM ORDER BLOCK
+# ==========================================================
 def detect_premium_order_block(candles, spot):
     if not candles or len(candles) < 60:
         return None, "Pas assez de bougies pour un Order Block premium."
@@ -348,7 +396,7 @@ def detect_premium_order_block(candles, spot):
         displacement_body = candle_body(after)
         strong_displacement = displacement_body >= avg_body * DISPLACEMENT_MULTIPLIER
 
-        # ---------- BUY : OB haussier ----------
+        # --------------------- BUY : OB haussier ---------------------
         if is_bearish(ob) and is_bullish(after):
             bos = after["close"] > previous_high
             zone_low = ob["low"]
@@ -374,6 +422,7 @@ def detect_premium_order_block(candles, spot):
                     sl = round(zone_low - OB_SL_BUFFER_POINTS, 2)
                     tp1, tp2, tp3, tp4 = make_targets("BUY", entry, sl)
                     lot, risk_estimated, warning = calculate_lot(entry, sl)
+                    distance_from_entry = round(abs(spot - entry), 2)
 
                     candidates.append({
                         "side": "BUY",
@@ -393,11 +442,12 @@ def detect_premium_order_block(candles, spot):
                         "micro_lots": round(lot * 100, 1),
                         "risk_estimated": risk_estimated,
                         "risk_warning": warning,
+                        "distance_from_entry": distance_from_entry,
                         "details": f"OB haussier + BOS au-dessus {previous_high:.2f} + déplacement {displacement_body:.2f}/{avg_body:.2f} + FVG={fvg}",
                         "signature": f"BUY|{round(zone_low, 2)}|{round(zone_high, 2)}|{ob.get('datetime', i)}",
                     })
 
-        # ---------- SELL : OB baissier ----------
+        # --------------------- SELL : OB baissier ---------------------
         if is_bullish(ob) and is_bearish(after):
             bos = after["close"] < previous_low
             zone_low = ob["open"]
@@ -423,6 +473,7 @@ def detect_premium_order_block(candles, spot):
                     sl = round(zone_high + OB_SL_BUFFER_POINTS, 2)
                     tp1, tp2, tp3, tp4 = make_targets("SELL", entry, sl)
                     lot, risk_estimated, warning = calculate_lot(entry, sl)
+                    distance_from_entry = round(abs(spot - entry), 2)
 
                     candidates.append({
                         "side": "SELL",
@@ -442,12 +493,13 @@ def detect_premium_order_block(candles, spot):
                         "micro_lots": round(lot * 100, 1),
                         "risk_estimated": risk_estimated,
                         "risk_warning": warning,
+                        "distance_from_entry": distance_from_entry,
                         "details": f"OB baissier + BOS sous {previous_low:.2f} + déplacement {displacement_body:.2f}/{avg_body:.2f} + FVG={fvg}",
                         "signature": f"SELL|{round(zone_low, 2)}|{round(zone_high, 2)}|{ob.get('datetime', i)}",
                     })
 
     if not candidates:
-        return None, f"Aucun Order Block premium valide. Tendance={trend['trend']}, session={session_reason}"
+        return None, "Aucun Order Block premium valide."
 
     best = sorted(candidates, key=lambda x: x["score"], reverse=True)[0]
 
@@ -457,7 +509,24 @@ def detect_premium_order_block(candles, spot):
     return best, "OK"
 
 
-# ===================== ANTI-SPAM =====================
+# ==========================================================
+# ✅ FILTRE PRIX TROP LOIN DE L’ENTRÉE
+# ==========================================================
+def price_not_too_far(signal):
+    distance = abs(signal["spot"] - signal["entry"])
+
+    if distance > MAX_DISTANCE_FROM_ENTRY_POINTS:
+        return False, (
+            f"Prix trop loin de l’entrée : distance {round(distance, 2)} points, "
+            f"maximum autorisé {MAX_DISTANCE_FROM_ENTRY_POINTS} points."
+        )
+
+    return True, "OK"
+
+
+# ==========================================================
+# 🔒 ANTI-SPAM
+# ==========================================================
 def can_send(signal):
     state = load_state()
     last_signature = state.get("signature")
@@ -476,20 +545,22 @@ def can_send(signal):
     return True, "OK"
 
 
-# ===================== TELEGRAM =====================
+# ==========================================================
+# 📲 ENVOI TELEGRAM AVEC ÉMOTICÔNES
+# ==========================================================
 def send_alert(signal):
     if not TOKEN or not CHAT_ID:
-        print("TOKEN ou CHAT_ID manquant.")
+        log_print("❌ TOKEN ou CHAT_ID manquant.")
         return False
 
     if signal["side"] == "BUY":
         side_icon = "🟢"
         side_text = "ACHAT"
-        action_text = "Chercher une entrée BUY sur retest"
+        action_text = "Chercher une entrée BUY sur retest uniquement"
     else:
         side_icon = "🔴"
         side_text = "VENTE"
-        action_text = "Chercher une entrée SELL sur retest"
+        action_text = "Chercher une entrée SELL sur retest uniquement"
 
     message = (
         f"🔥 XAUUSD PREMIUM ORDER BLOCK 🔥\n"
@@ -503,6 +574,7 @@ def send_alert(signal):
         f"💰 Prix spot : {signal['spot']}\n"
         f"🧱 Zone OB : {signal['zone_low']} → {signal['zone_high']}\n"
         f"🎯 Entrée indicative : {signal['entry']}\n"
+        f"📏 Distance prix/entrée : {signal['distance_from_entry']} pts\n"
         f"🛑 Stop-loss : {signal['sl']}\n\n"
 
         f"🎯 OBJECTIFS\n"
@@ -514,88 +586,4 @@ def send_alert(signal):
 
         f"📊 CONTEXTE\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"📉 Tendance : {signal['trend']}\n"
-        f"⏰ Session : {signal['session']}\n"
-        f"🧠 Raison : {signal['details']}\n\n"
-
-        f"💼 MONEY MANAGEMENT\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"📦 Lot théorique : {signal['lot']} lot\n"
-        f"🔹 Micro-lots : {signal['micro_lots']}\n"
-        f"🧮 Risque estimé : {signal['risk_estimated']} {ACCOUNT_CURRENCY}\n"
-        f"⚠️ Sécurité : {signal['risk_warning']}\n\n"
-
-        f"✅ PLAN\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"➡️ Action : {action_text}\n"
-        f"🚫 Ne pas entrer si le prix est déjà trop loin.\n"
-        f"👀 Vérifie le risque chez le courtier avant validation.\n\n"
-
-        f"⚠️ Signal informatif, aucune garantie de profit."
-    )
-
-    try:
-        response = requests.post(
-            f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-            json={"chat_id": CHAT_ID, "text": message},
-            timeout=20,
-        )
-
-        if response.status_code == 200:
-            print("Signal premium OB envoyé.")
-            return True
-
-        print(f"Erreur Telegram: {response.text}")
-        return False
-
-    except Exception as e:
-        print(f"Erreur envoi Telegram: {e}")
-        return False
-
-
-# ===================== BOUCLE PRINCIPALE =====================
-if __name__ == "__main__":
-    print("Bot XAUUSD Premium Order Blocks démarré.")
-    print(
-        f"Réglages: interval={INTERVAL}min, "
-        f"score_min={MIN_OB_SCORE}, "
-        f"sessions={ALLOWED_SESSIONS}, "
-        f"trend_filter={USE_TREND_FILTER}"
-    )
-
-    if SEND_STARTUP_MESSAGE and TOKEN and CHAT_ID:
-        try:
-            requests.post(
-                f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-                json={"chat_id": CHAT_ID, "text": "Bot Premium Order Blocks en ligne."},
-                timeout=20,
-            )
-        except Exception:
-            pass
-
-    while True:
-        try:
-            spot, candles = get_price_and_candles()
-
-            if spot is None or candles is None:
-                print("Données indisponibles.")
-            else:
-                signal, reason = detect_premium_order_block(candles, spot)
-
-                if signal is None:
-                    print(f"[{now_local().strftime('%H:%M')}] Prix={spot} — pas de signal: {reason}")
-                else:
-                    allowed, spam_reason = can_send(signal)
-
-                    if not allowed:
-                        print(f"[{now_local().strftime('%H:%M')}] {spam_reason}")
-                        log_signal(signal, sent=False, reason=spam_reason)
-                    else:
-                        sent = send_alert(signal)
-                        log_signal(signal, sent=sent, reason="envoyé" if sent else "erreur envoi")
-
-        except Exception as e:
-            print(f"Erreur boucle principale: {e}")
-
-        time.sleep(INTERVAL * 60)
-              
+        f"📈 Tendance : {sign
